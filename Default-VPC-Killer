@@ -1,0 +1,66 @@
+#!/bin/bash
+# Get the list of all AWS account profiles
+profiles=$(aws configure list-profiles --output text)
+count=0 #A simple counter to count the number of VPCs that are getting deleted
+for profile in $profiles; do
+  echo "Fetching Default VPC details for $profile"
+  echo "--------------------------------------------------"
+  export AWS_PROFILE=$profile
+  # Get a list of all AWS regions
+  regions=$(aws ec2 describe-regions --query 'Regions[].RegionName' --output text)
+  #===========================================================
+  #regions=("eu-north-1" "eu-west-3") #Uncomment this to delete VPCs only from specific regions
+  #for region in "${regions[@]}"; do
+  #===========================================================
+  for region in $regions; do
+      echo "Fetching default VPC details in the $region region..."
+	  # Get the ID of the default VPC in this region
+      default_vpc_id=$(aws ec2 describe-vpcs --filters "Name=isDefault,Values=true" --region $region --query "Vpcs[].VpcId" --output text)
+      if [ ! -z "$default_vpc_id" ]; then
+	     echo " Attempting to detach and delete the internet gateway attached to the default VPC $default_vpc_id in $region..."
+         echo ""
+	     # Get the ID of internet gateway attached to the default VPC
+	     igw_id=$(aws ec2 describe-internet-gateways --region $region --filters Name=attachment.vpc-id,Values=$default_vpc_id --query "InternetGateways[].InternetGatewayId" --output text)
+	     if [ ! -z "$igw_id" ]; then
+	        #Detach the IGW
+	        aws ec2 detach-internet-gateway --internet-gateway-id $igw_id --region $region --vpc-id $default_vpc_id
+	        #Delete the IGW
+	        aws ec2 delete-internet-gateway --region $region --internet-gateway-id $igw_id
+            echo " Successfully deleted $igw_id from the region $region ."
+            echo ""
+	     else
+            echo " No default IGW attached to $default_vpc_id was found."
+            echo ""
+	     fi
+	     #Get subnet IDs of subnets associated with default VPC
+	     echo " Fetching details of subnets associated with the default VPC..."
+         echo ""
+	     subnets=$(aws ec2 describe-subnets --region $region --filters Name=vpc-id,Values=$default_vpc_id --query "Subnets[].SubnetId" --output text)
+	     if [ ! -z "$subnets" ]; then
+	        for subnet in $subnets; do
+	            #Delete the subnet
+		        echo "  Attempting to delete the subnet $subnet ..."
+                echo ""
+	            aws ec2 delete-subnet --region $region --subnet-id $subnet
+                echo "  The subnet $subnet has been deleted successfully..."
+                echo ""
+	        done
+	     else
+             echo "  No subnets were found."
+             echo ""
+         fi
+         echo " Attempting to delete the default VPC $default_vpc_id in $region..."
+         echo ""
+         aws ec2 delete-vpc --vpc-id $default_vpc_id --region $region
+         echo " The default VPC $default_vpc_id in region $region has been deleted successfully..."
+         echo ""
+         count=$((count+1))
+      else
+         echo " No default VPC was found in $region."
+         echo ""
+      fi
+      echo ""
+      echo "===================================================================="
+      echo ""
+  done
+done
